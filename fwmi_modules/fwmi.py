@@ -23,7 +23,7 @@ class Hybrid:
     the hybrid arm is denoted by 3.
     """
 
-    def __init__(self, fopd, theta_t, gamma_m, gamma_a, lam, t_ref, p, pure_arm=N_SF66, hybrid_arm=P_SF68):
+    def __init__(self, fopd, theta_t, gamma_m, gamma_a, lam, t, t_ref, p, d_opd_d_t, pure_arm=N_SF66, hybrid_arm=P_SF68):
         """
 
         :param fopd:
@@ -31,8 +31,10 @@ class Hybrid:
         :param gamma_m:
         :param gamma_a:
         :param lam:
+        :param t:
         :param t_ref:
         :param p:
+        :param d_opd_d_t:
         """
         self.fopd = fopd
         self.theta_t = theta_t
@@ -287,7 +289,7 @@ class Hybrid:
 
 class Pure:
 
-    def __init__(self, fopd, theta_t, gamma_m, gamma_a, lam, t_ref, p, glass=P_SF68):
+    def __init__(self, fopd, theta_t, gamma_m, gamma_a, lam, t, t_ref, p, glass=P_SF68):
         """
 
         :param fopd:
@@ -382,7 +384,8 @@ class Pure:
         :param d2:
         :return:
         """
-        return self.opd_exact(theta, n1, d1, n2, d2, n3=1, d3=0)
+        return 2 * (n1 * d1 * self.snell_cos_to_sin(n1, theta)
+                    - n2 * d2 * self.snell_cos_to_sin(n2, theta))
 
     def generate_n_glass(self, t):
         """
@@ -499,9 +502,9 @@ class Pure:
         return integral / (np.pi * f ** 2 * theta_d ** 2)
 
 
-class all_silica(Hybrid):
+class Metal(Pure):
 
-    def __init__(self, fopd, theta_t, gamma_m, gamma_a, lam, t, t_ref, p, d_opd_d_t=0):
+    def __init__(self, fopd, theta_t, gamma_m, gamma_a, lam, t, t_ref, p, d_opd_d_t=0, glass=N_SF66, metal_a=17e-6):
         """
 
         :param fopd:
@@ -512,180 +515,11 @@ class all_silica(Hybrid):
         :param t:
         :param t_ref:
         :param p:
+        :param d_opd_d_t:
+        :param glass:
+        :param metal_a: Float. Coefficient of thermal expansion for the metal spacer
         """
-        Hybrid.__init__(self, fopd, theta_t, gamma_m, gamma_a, lam, t_ref, p)
-        self.t = t
-        self.d_opd_d_t = d_opd_d_t
-        self.pure = LITHOSIL_Q()
-        self.n_ref_1 = self.pure.sellmeier_1(self.lam)
-        self.n1 = self.generate_n1(self.t)
-        self.b1 = self.pure.beta(self.t, self.n_ref_1, self.lam)
-
-        self.hybrid = LITHOSIL_Q()
-        self.n_ref_2 = self.hybrid.sellmeier_1(self.lam)
-        self.n2 = self.generate_n2(self.t)
-        self.b2 = self.hybrid.beta(self.t, self.n_ref_2, self.lam)
-
-        self.air = Air()
-        self.n3 = self.air.n_air(self.lam, self.t, self.p)
-        self.b3 = self.air.beta_air(self.lam, self.t, self.p)
-        # self.thickness_generator = np.asarray([self.fopd, 0, 1064e-9/10])  #[FOPD, w(theta), d_OPD/d_T]
-
-        self.d1, self.d2, self.d3 = self.generate_thickness()
-
-    def generate_n1(self, t):
-        """
-
-        :param t:
-        :return:
-        """
-        return self.n_ref_1 + self.pure.delta_n(t, self.n_ref_1, self.lam)
-
-    def generate_n2(self, t):
-        """
-
-        :param t:
-        :return:
-        """
-        return self.n_ref_2 + self.hybrid.delta_n(t, self.n_ref_2, self.lam)
-
-    def generate_n3(self, t):
-        """
-
-        :param t:
-        :return:
-        """
-        return self.air.n_air(self.lam, t, self.p)
-
-    def generate_thickness(self):
-        """
-        Calculate the thicknesses of the three materials.
-
-        Uses Eq 2, 6, and 7 from [1].
-        :return: Tuple. The thicknesses (d1, d2, d3).
-        """
-        root1 = np.sqrt(self.n1 ** 2 - np.sin(self.theta_t) ** 2)
-        root2 = np.sqrt(self.n2 ** 2 - np.sin(self.theta_t) ** 2)
-        root3 = np.sqrt(self.n3 ** 2 - np.sin(self.theta_t) ** 2)
-
-        m1 = 2 * np.asarray([[self.n1 * np.sqrt(1 - (np.sin(self.theta_t) / self.n1) ** 2),
-                              -self.n2 * np.sqrt(1 - (np.sin(self.theta_t) / self.n2) ** 2),
-                              -self.n3 * np.sqrt(1 - (np.sin(self.theta_t) / self.n3) ** 2)],
-                             [-1 / (2 * root1), 1 / (2 * root2), 1 / (2 * root3)],
-                             [self.pure.a * root1 + self.n1 * self.b1 / root1,
-                              -(self.hybrid.a * root2 + self.n2 * self.b2 / root2),
-                              -(self.air.a * root3 + self.n3 * self.b3 / root3)]])
-        v1 = np.asarray([self.fopd, 0, self.d_opd_d_t])
-
-        return tuple(la.solve(m1, v1))
-
-    def d1_thermal_expansion(self, t):
-        """
-        Calculate the thermal expansion of the pure glass arm.
-
-        Because d1 was determined with self.t, the reference temperature used here is self.t, not self.pure.t_ref.
-        :param t: Float. The temperature at which to calculate the thermal expansion.
-        :return: Float. The thermally expanded length of the glass.
-        """
-        return self.d1 * (1 + self.pure.a * (t - self.t))
-
-    def d2_thermal_expansion(self, t):
-        """
-        Calculate the thermal expansion of the glass in the hybrid arm.
-
-        Because d2 was determined with self.t, the reference temperature used here is self.t, not self.hybrid.t_ref.
-        :param t: Float. The temperature at which to calculate the thermal expansion.
-        :return: Float. The thermally expanded length of the glass.
-        """
-        return self.d2 * (1 + self.hybrid.a * (t - self.t))
-
-    def local_transmittance(self, d_phi, gamma, fsr, rms=0, phase_dev=0):
-        """
-        Calculate the local transmittance.
-
-        For a given FWMI and incident beam, the output is a function of the angle in the plane of the FWMI.
-        The incident intensities are assumed to both be 1.
-        Eq. 14 in [1].
-
-        The rms wavefront error can be incorporated for small errors by setting the rms argument.
-        The wavefront error has a general form for different sources of error, see section 3.2.2c and Eq. 23 of [1].
-        :param d_phi: Float. The phase difference between a ray incident at some angle and a ray incident at the tilt angle.
-        :param gamma: Float. The linewidth of the signal (molecular or aerosol).
-        :param fsr: Float. The FSR of the FWMI. A function of the tilt angle.
-        :param rms: Float. The rms wavefront error. Default is 0.
-        :param phase_dev: Float. The frequency shift from a perfect lock.
-        :return: Float. The local transmittance.
-        """
-        rms = 2 * np.pi * self.nu * rms / const.c
-        return 1 / 2 - 1 / 2 * np.exp(-(np.pi * gamma / fsr) ** 2) * np.cos(d_phi + phase_dev * 2 * np.pi / fsr) * (
-                    1 - rms ** 2 / 2)
-
-    def mapping_angle(self, rho, phi, f):
-        """
-        Calculate the angle used in the transmittance map function.
-
-        The map is from the exit angle of the FWMI to the focal plane of the exit lens, Eq. 16 in [1].
-        :param rho: Float. The radial coordinate in the exit lens's image plane.
-        :param phi: Float. The azimuthal coordinate in the exit lens's image plane.
-        :param theta_t: Float. The tilt angle.
-        :param f: Float. The exit lens's focal length.
-        :return: Float. The angle to use with the local transmittance mapping function.
-        """
-        return np.arccos((2 * f * np.cos(self.theta_t) ** 2 - rho * np.sin(2 * self.theta_t) * np.cos(phi)) / (
-                    2 * np.sqrt(f ** 2 + rho ** 2) * np.cos(self.theta_t)))
-
-    def transmittance_map_integrand(self, rho, phi, f, gamma, fsr, rms=0, phase_dev=False):
-        """
-        Calculate the integrand of the overall transmittance function.
-
-        Based on the map from the local transmittance to the transmittance at the exit lens image plane.
-        :param rho: Float. The radial coordinate in the exit lens's image plane.
-        :param phi: Float. The azimuthal coordinate in the exit lens's image plane.
-        :param f: Float. The exit lens's focal length.
-        :param gamma: Float. The linewidth of the signal (molecular or aerosol).
-        :param fsr: Float. The FSR of the FWMI. A function of the tilt angle.
-        :param rms: Float. The rms wavefront error. Default is 0.
-        :param phase_dev: Float. The frequency shift from a perfect lock.
-        :return: Float. The integrand of the overall transmittance.
-        """
-        theta = self.mapping_angle(rho, phi, f)
-        opd_theta = self.opd_exact(theta, self.n1, self.d1, self.n2, self.d2, self.n3, self.d3)
-        del_phi = self.delta_phi(opd_theta, const.c / fsr)  # const.c / fsr instead of fopd to make changing fopd easier
-        return rho * self.local_transmittance(del_phi, gamma, fsr, rms, phase_dev)
-
-    def overall_transmittance(self, theta_d, f, gamma, fsr, rms=0, phase_dev=False):
-        """
-        Calculate the overall transmittance in the focal plane of the exit lens.
-
-        Eq. 15 in [1].
-        :param theta_d: Float. The HALF divergent angle that sets the limit on the integrand.
-        :param f: Float. The exit lens's focal length.
-        :param gamma: Float. The linewidth of the signal (molecular or aerosol).
-        :param fsr: Float. The FSR of the FWMI. A function of the tilt angle.
-        :param rms: Float. The rms wavefront error. Default is 0.
-        :param phase_dev: Float. The frequency shift from a perfect lock.
-        :return:
-        """
-        integral = \
-        nquad(self.transmittance_map_integrand, [[0, f * theta_d], [-np.pi, np.pi]], [f, gamma, fsr, rms, phase_dev])[0]
-        return integral / (np.pi * f ** 2 * theta_d ** 2)
-
-
-class Copper(Pure):
-
-    def __init__(self, fopd, theta_t, gamma_m, gamma_a, lam, t, t_ref, p, d_opd_d_t=0, glass=N_SF66):
-        """
-
-        :param fopd:
-        :param theta_t:
-        :param gamma_m:
-        :param gamma_a:
-        :param lam:
-        :param t:
-        :param t_ref:
-        :param p:
-        """
-        Pure.__init__(self, fopd, theta_t, gamma_m, gamma_a, lam, t_ref, p)
+        Pure.__init__(self, fopd, theta_t, gamma_m, gamma_a, lam, t, t_ref, p, glass=N_SF66)
         self.t = t
         self.d_opd_d_t = d_opd_d_t
         self.glass = glass()
@@ -696,14 +530,18 @@ class Copper(Pure):
         self.n_air = self.generate_n_air(self.t)
 
         self.d_glass, self.d_air = self.generate_thickness()
-        self.copper_a = 17e-6  # coefficient of thermal expansion for copper
-        # self.d_copper = 0 * d_opd_d_t / abs(self.glass.a - self.copper_a)  # Thickness of copper
-        # self.d_copper = self.n_glass / self.n_air * self.d_glass * self.glass.a / self.copper_a  #(d_opd_d_t + self.d_glass * self.glass.a) / self.copper_a
-        if d_opd_d_t == None:
-            self.d_copper = self.d_air
+        if metal_a == None and d_opd_d_t == None:
+            raise Exception('Either metal_a or d_opd_d_t need to be specified.')
+        if metal_a == None:
+            self.d_metal = self.d_air
+            self.metal_a = self.generate_metal_a(d_opd_d_t)
         else:
-            self.d_copper = self.generate_copper_thickness(d_opd_d_t)
-        print(self.d_copper, self.d_air, self.d_glass, self.d_air * self.n_air, self.d_glass * self.n_glass)
+            self.metal_a = metal_a
+            if d_opd_d_t == None:
+                self.d_metal = self.d_air
+            else:
+                self.d_metal = self.generate_metal_thickness(d_opd_d_t)
+        print(self.d_metal, self.d_air, self.d_glass, self.d_air * self.n_air, self.d_glass * self.n_glass)
 
     def generate_n_glass(self, t):
         """
@@ -738,7 +576,21 @@ class Copper(Pure):
 
         return tuple(la.solve(m1, v1))
 
-    def generate_copper_thickness(self, d_opd_dt):
+    def generate_metal_a(self, d_opd_dt):
+        """
+
+        """
+        root1 = np.sqrt(self.n_glass ** 2 - np.sin(self.theta_t) ** 2)
+        root2 = np.sqrt(self.n_air ** 2 - np.sin(self.theta_t) ** 2)
+        b1 = self.glass.beta(self.t, self.n_ref_glass, self.lam)
+        b2 = self.air.beta_air(self.lam, self.t, self.p)
+        coef = -1 / (self.d_metal * root2)
+        term1 = self.glass.a * self.d_glass * root1
+        term2 = b1 * self.n_glass * self.d_glass / root1
+        term3 = b2 * self.n_air * self.d_air / root2
+        return coef * (d_opd_dt / 2 - term1 - term2 + term3)
+
+    def generate_metal_thickness(self, d_opd_dt):
         """
         Calculate the thickness of the copper spacer required to produce a particular OPD temperature tuning
 
@@ -751,7 +603,7 @@ class Copper(Pure):
         root2 = np.sqrt(self.n_air ** 2 - np.sin(self.theta_t) ** 2)
         b1 = self.glass.beta(self.t, self.n_ref_glass, self.lam)
         b2 = self.air.beta_air(self.lam, self.t, self.p)
-        coef = -1 / (self.copper_a * root2)
+        coef = -1 / (self.metal_a * root2)
         term1 = self.glass.a * self.d_glass * root1
         term2 = b1 * self.n_glass * self.d_glass / root1
         term3 = b2 * self.n_air * self.d_air / root2
@@ -775,8 +627,8 @@ class Copper(Pure):
         :param t: Float. The temperature at which to calculate the thermal expansion.
         :return: Float. The thermally expanded length of the glass.
         """
-        return self.d_air + self.d_copper * (self.copper_a * (t - self.t))
-        # return self.d_air * (1 + self.copper_a * (t - self.t))
+        return self.d_air + self.d_metal * (self.metal_a * (t - self.t))
+        # return self.d_air * (1 + self.metal_a * (t - self.t))
 
     def local_transmittance(self, d_phi, gamma, fsr, rms=0, phase_dev=0):
         """
@@ -848,75 +700,3 @@ class Copper(Pure):
         integral = \
         nquad(self.transmittance_map_integrand, [[0, f * theta_d], [-np.pi, np.pi]], [f, gamma, fsr, rms, phase_dev])[0]
         return integral / (np.pi * f ** 2 * theta_d ** 2)
-
-
-if __name__ == "__main__":
-    configuration = "hybrid"
-    if configuration == "pure":
-        switch_lam = 2
-        lam = 532e-9 * switch_lam
-        theta_t = 1.5 * np.pi / 180
-        gamma_m = 1.40e9 / switch_lam  # molecular signal spectral width
-        gamma_a = 50e6 / switch_lam  # aerosol signal spectral width
-        fopd = 0.1 * switch_lam
-        t_ref = 20
-        t = 20
-        p = 1
-        f = 0.1
-        # fopd = 0.1000000255239908
-        p1 = P1(fopd, theta_t, gamma_m, gamma_a, lam, t, t_ref, p)
-        opd = p1.opd_exact_pure(theta_t, p1.n_glass, p1.d_glass, p1.n_air, p1.d_air)
-        opd2 = p1.opd_exact_pure(theta_t,
-                                 p1.generate_n_glass(t),
-                                 p1.d_glass_thermal_expansion(t),
-                                 p1.generate_n_air(t),
-                                 p1.d_air)
-        d_glass = p1.d_glass
-        d_air = p1.d_air
-        print(p1.d_glass, p1.d_air, opd, opd2, (opd2 - fopd) / lam)
-
-        d_glass_paper = 0.0327670
-        d_air_paper = 0.0162143
-        n_ref_glass_paper = 2.0209909911203465
-
-        d_d_glass = d_glass_paper - d_glass
-        d_d_air = d_air_paper - d_air
-
-        print(d_d_glass, d_d_air)
-    elif configuration == "hybrid":
-        switch_lam = 2
-        lam = 532e-9 * switch_lam
-        theta_t = 1.5 * np.pi / 180
-        gamma_m = 1.40e9 / switch_lam  # molecular signal spectral width
-        gamma_a = 50e6 / switch_lam  # aerosol signal spectral width
-        fopd = 0.1 * switch_lam
-        t_ref = 20
-        t = 20
-        p = 1
-        f = 0.1
-        # fopd = 0.1000000255239908
-        h1 = H1(fopd, theta_t, gamma_m, gamma_a, lam, t, t_ref, p)
-        opd = h1.opd_exact(theta_t, h1.n1, h1.d1, h1.n2, h1.d2, h1.n3, h1.d3)
-        opd2 = h1.opd_exact(theta_t,
-                            h1.generate_n1(t),
-                            h1.d1_thermal_expansion(t),
-                            h1.generate_n2(t),
-                            h1.d2_thermal_expansion(t),
-                            h1.generate_n3(t),
-                            h1.d3)
-        d1 = h1.d1
-        d2 = h1.d2
-        d3 = h1.d3
-        print(h1.d1, h1.d2, h1.d3, opd, opd2, (opd2 - fopd) / lam)
-
-        d1_paper = 0.053220
-        d2_paper = 0.0167970
-        d3_paper = 0.0191608
-        n_ref_1_paper = 1.9374328041896338
-        n_ref_2_paper = 2.0209909911203465
-
-        d_d1 = d1_paper - d1
-        d_d2 = d2_paper - d2
-        d_d3 = d3_paper - d3
-
-        print(d_d1, d_d2, d_d3)
